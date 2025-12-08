@@ -1,6 +1,6 @@
 using System;
 using System.Globalization;
-using Mono.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using System.Data;
 
 class Program {
