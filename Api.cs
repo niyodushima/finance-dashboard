@@ -9,7 +9,7 @@ using System.Globalization;
 
 class ApiServer {
     const string ConnString = "URI=file:finance.db";
-    const string Prefix = "http://localhost:5000/";
+    const string Prefix = "https://finance-api.onrender.com";
 
     static void Main() {
         EnsureDatabase();
