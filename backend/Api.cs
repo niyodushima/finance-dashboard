@@ -1,109 +1,55 @@
 using System;
-using System.Net;
-using System.Text;
-using System.IO;
-using System.Data;
-using Mono.Data.Sqlite;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+using Microsoft.Data.Sqlite;
 
-class Api
+static class Api
 {
-    const string ConnString = "URI=file:finance.db";
+    // Allow override via environment variable for Render persistent disk (e.g., /data/finance.db)
+    static string DbPath => Environment.GetEnvironmentVariable("DB_PATH") ?? "finance.db";
+    static string ConnString => $"URI=file:{DbPath}";
 
-    static void Main()
-    {
-        EnsureDatabase();
-
-        string port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-        string prefix = $"http://0.0.0.0:{port}/";
-
-        HttpListener listener = new HttpListener();
-        listener.Prefixes.Add(prefix);
-        listener.Start();
-        Console.WriteLine($"Finance API running on {prefix}");
-
-        while (true)
-        {
-            var ctx = listener.GetContext();
-            var req = ctx.Request;
-            var res = ctx.Response;
-
-            string responseString = HandleRequest(req);
-            byte[] buffer = Encoding.UTF8.GetBytes(responseString);
-
-            res.ContentType = "application/json";
-            res.ContentLength64 = buffer.Length;
-            res.OutputStream.Write(buffer, 0, buffer.Length);
-            res.OutputStream.Close();
-        }
-    }
-
-    static string HandleRequest(HttpListenerRequest req)
-    {
-        try
-        {
-            if (req.Url.AbsolutePath == "/api/health")
-            {
-                return "{\"status\":\"ok\"}";
-            }
-            else if (req.Url.AbsolutePath == "/api/customers" && req.HttpMethod == "GET")
-            {
-                return ListCustomers();
-            }
-            else if (req.Url.AbsolutePath == "/api/summary" && req.HttpMethod == "GET")
-            {
-                return ShowSummary();
-            }
-            else
-            {
-                return "{\"error\":\"Unknown endpoint\"}";
-            }
-        }
-        catch (Exception ex)
-        {
-            return $"{{\"error\":\"{ex.Message}\"}}";
-        }
-    }
-
-    static void EnsureDatabase()
+    public static void EnsureDatabase()
     {
         using (var conn = new SqliteConnection(ConnString))
         {
             conn.Open();
 
-            string[] sqls = {
-                @"CREATE TABLE IF NOT EXISTS Users (
+            string createUsers = @"
+                CREATE TABLE IF NOT EXISTS Users (
                   Id INTEGER PRIMARY KEY AUTOINCREMENT,
                   Username TEXT UNIQUE NOT NULL,
                   Password TEXT NOT NULL
-                );",
-                @"CREATE TABLE IF NOT EXISTS Customers (
+                );";
+            string createCustomers = @"
+                CREATE TABLE IF NOT EXISTS Customers (
                   Id INTEGER PRIMARY KEY AUTOINCREMENT,
                   Name TEXT NOT NULL
-                );",
-                @"CREATE TABLE IF NOT EXISTS Income (
+                );";
+            string createIncome = @"
+                CREATE TABLE IF NOT EXISTS Income (
                   Id INTEGER PRIMARY KEY AUTOINCREMENT,
                   CustomerId INTEGER,
                   Amount REAL NOT NULL,
                   Date TEXT DEFAULT CURRENT_TIMESTAMP,
                   Description TEXT,
                   FOREIGN KEY(CustomerId) REFERENCES Customers(Id)
-                );",
-                @"CREATE TABLE IF NOT EXISTS Expenses (
+                );";
+            string createExpenses = @"
+                CREATE TABLE IF NOT EXISTS Expenses (
                   Id INTEGER PRIMARY KEY AUTOINCREMENT,
                   CustomerId INTEGER,
                   Amount REAL NOT NULL,
                   Date TEXT DEFAULT CURRENT_TIMESTAMP,
                   Description TEXT,
                   FOREIGN KEY(CustomerId) REFERENCES Customers(Id)
-                );"
-            };
+                );";
 
-            foreach (var sql in sqls)
-            {
-                using (var cmd = new SqliteCommand(sql, conn))
-                    cmd.ExecuteNonQuery();
-            }
+            using (var cmd = new SqliteCommand(createUsers, conn)) cmd.ExecuteNonQuery();
+            using (var cmd = new SqliteCommand(createCustomers, conn)) cmd.ExecuteNonQuery();
+            using (var cmd = new SqliteCommand(createIncome, conn)) cmd.ExecuteNonQuery();
+            using (var cmd = new SqliteCommand(createExpenses, conn)) cmd.ExecuteNonQuery();
 
             string checkAdmin = "SELECT COUNT(*) FROM Users WHERE Username='admin';";
             using (var cmd = new SqliteCommand(checkAdmin, conn))
@@ -112,17 +58,18 @@ class Api
                 if (count == 0)
                 {
                     string seed = "INSERT INTO Users (Username, Password) VALUES ('admin', 'Admin@123');";
-                    using (var seedCmd = new SqliteCommand(seed, conn))
-                        seedCmd.ExecuteNonQuery();
+                    using (var seedCmd = new SqliteCommand(seed, conn)) seedCmd.ExecuteNonQuery();
                     Console.WriteLine("Seeded default admin user: admin / Admin@123");
                 }
             }
         }
     }
 
-    static string ListCustomers()
+    // JSON: [{"id":1,"name":"Alice"}, ...]
+    public static string ListCustomersJson()
     {
-        var customers = new List<string>();
+        var customers = new List<(long id, string name)>();
+
         using (var conn = new SqliteConnection(ConnString))
         {
             conn.Open();
@@ -132,18 +79,30 @@ class Api
             {
                 while (reader.Read())
                 {
-                    int id = reader.GetInt32(0);
+                    long id = reader.GetInt64(0);
                     string name = reader.GetString(1);
-                    customers.Add($"{{\"id\":{id},\"name\":\"{name}\"}}");
+                    customers.Add((id, Escape(name)));
                 }
             }
         }
-        return "[" + string.Join(",", customers) + "]";
+
+        var sb = new StringBuilder();
+        sb.Append('[');
+        for (int i = 0; i < customers.Count; i++)
+        {
+            var c = customers[i];
+            sb.Append($"{{\"id\":{c.id},\"name\":\"{c.name}\"}}");
+            if (i < customers.Count - 1) sb.Append(',');
+        }
+        sb.Append(']');
+        return sb.ToString();
     }
 
-    static string ShowSummary()
+    // JSON: [{"id":1,"name":"Alice","income":1000,"expense":200,"balance":800}, ...]
+    public static string SummaryJson()
     {
-        var rows = new List<string>();
+        var rows = new List<(long id, string name, double income, double expense, double balance)>();
+
         using (var conn = new SqliteConnection(ConnString))
         {
             conn.Open();
@@ -162,15 +121,37 @@ class Api
             {
                 while (reader.Read())
                 {
-                    int id = reader.GetInt32(0);
+                    long id = reader.GetInt64(0);
                     string name = reader.GetString(1);
-                    double income = reader.GetDouble(2);
-                    double expense = reader.GetDouble(3);
-                    double balance = reader.GetDouble(4);
-                    rows.Add($"{{\"id\":{id},\"name\":\"{name}\",\"income\":{income},\"expense\":{expense},\"balance\":{balance}}}");
+                    double income = reader.IsDBNull(2) ? 0 : reader.GetDouble(2);
+                    double expense = reader.IsDBNull(3) ? 0 : reader.GetDouble(3);
+                    double balance = income - expense;
+                    rows.Add((id, Escape(name), income, expense, balance));
                 }
             }
         }
-        return "[" + string.Join(",", rows) + "]";
+
+        var sb = new StringBuilder();
+        sb.Append('[');
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            sb.Append($"{{\"id\":{r.id},\"name\":\"{r.name}\",\"income\":{ToJsonNumber(r.income)},\"expense\":{ToJsonNumber(r.expense)},\"balance\":{ToJsonNumber(r.balance)}}}");
+            if (i < rows.Count - 1) sb.Append(',');
+        }
+        sb.Append(']');
+        return sb.ToString();
+    }
+
+    static string Escape(string s)
+    {
+        if (s == null) return "";
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    static string ToJsonNumber(double d)
+    {
+        // Ensure '.' decimal separator regardless of culture
+        return d.ToString("0.############", CultureInfo.InvariantCulture);
     }
 }
