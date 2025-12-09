@@ -42,3 +42,6 @@
     "not ie 11"
   ]
 }
+"engines": {
+  "node": "16.x"
+}
