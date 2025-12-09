@@ -1,12 +1,28 @@
-FROM mono:latest
-
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
 WORKDIR /app
 
-# Copy backend sources
+# Copy csproj and restore first for better caching
+COPY Finance.csproj ./
+RUN dotnet restore
+
+# Copy source
 COPY . .
 
-# Build the API (compile Program.cs + Api.cs)
-RUN mcs -r:Microsoft.Data.Sqlite.dll -out:FinanceApi.exe Program.cs Api.cs || true
+# Publish a self-contained app (framework-dependent)
+RUN dotnet publish -c Release -o /out
 
-# Run the API
-CMD ["mono", "FinanceApi.exe"]
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/runtime:6.0
+WORKDIR /app
+
+# Copy published output
+COPY --from=build /out ./
+
+# Expose the port (Render uses PORT env var; app binds to it in code)
+ENV PORT=8080
+# Optional: if you add a persistent disk later
+# ENV DB_PATH=/data/finance.db
+
+# Run the app
+CMD ["dotnet", "Finance.dll"]
